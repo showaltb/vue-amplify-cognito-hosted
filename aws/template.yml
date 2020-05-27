@@ -1,0 +1,190 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: vue-amplify-cognito-hosted resources
+
+Resources:
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Priority: 1
+            Name: verified_email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AliasAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: true
+      UsernameConfiguration:
+        CaseSensitive: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "vue-amplify-${AWS::AccountId}"
+      UserPoolId: !Ref UserPool
+
+  UserPoolResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      Identifier: test-api
+      Name: vue-amplify-cognito-hosted test API
+      Scopes:
+        - ScopeDescription: Read access
+          ScopeName: read
+        - ScopeDescription: Write access
+          ScopeName: write
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - profile
+        - test-api/read
+        - test-api/write
+      CallbackURLs:
+        - "http://localhost:8080"
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+      GenerateSecret: false
+      LogoutURLs:
+        - "http://localhost:8080"
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref UserPool
+
+  AdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      Description: Administrators
+      GroupName: admins
+      UserPoolId: !Ref UserPool
+
+  TestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Auth:
+        Authorizers:
+          UserPoolAuthorizer:
+            AuthType: COGNITO_USER_POOLS
+            UserPoolArn: !GetAtt UserPool.Arn
+      Cors:
+        AllowHeaders: "'Authorization,Content-Type'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowOrigin: "'*'"
+      GatewayResponses:
+        # add CORS headers to auth failure response. cf.
+        # https://forums.aws.amazon.com/thread.jspa?messageID=764227
+        UNAUTHORIZED:
+          StatusCode: 401
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+      StageName: prod
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: arn:aws:logs:*:*:*
+
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      InlineCode: |
+        exports.handler = async (event) => {
+          const response = {
+            statusCode: 200,
+            headers: {
+              'Access-Control-Allow-Headers': 'Authorization,Content-Type',
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+            },
+            body: JSON.stringify({ event }),
+          }
+          try {
+            if (event.resource === '/admin') {
+              const groups = event.requestContext.authorizer.claims['cognito:groups'] || []
+              if (!groups.includes('admin')) {
+                response.statusCode = 403
+                response.body = JSON.stringify({ error: 'You must be a member of the admins group to access this resource' })
+              }
+            }
+          }
+          catch(error) {
+            response.statusCode = 500
+            response.body = JSON.stringify({ error: error.message || error })
+          }
+          return response
+        };
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs12.x
+      Events:
+        GetUser:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TestApi
+            Path: /user
+            Method: GET
+            Auth:
+              AuthorizationScopes:
+                - test-api/read
+              Authorizer: UserPoolAuthorizer
+        PostUser:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TestApi
+            Path: /user
+            Method: POST
+            Auth:
+              AuthorizationScopes:
+                - test-api/write
+              Authorizer: UserPoolAuthorizer
+        GetAdmin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TestApi
+            Path: /admin
+            Method: GET
+            Auth:
+              AuthorizationScopes:
+                - test-api/read
+              Authorizer: UserPoolAuthorizer
+        PostAdmin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TestApi
+            Path: /admin
+            Method: POST
+            Auth:
+              AuthorizationScopes:
+                - test-api/write
+              Authorizer: UserPoolAuthorizer

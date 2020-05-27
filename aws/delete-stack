@@ -1,0 +1,11 @@
+#!/bin/sh
+
+cd "$(dirname "$0")"
+. ../.env
+export AWS_PROFILE
+export AWS_REGION
+
+aws cloudformation delete-stack \
+  --stack-name ${STACK_NAME}
+
+rm -f config.sh
