@@ -42,6 +42,7 @@ Resources:
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    DependsOn: UserPoolResourceServer
     Properties:
       AllowedOAuthFlows:
         - code
